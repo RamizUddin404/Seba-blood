@@ -169,6 +169,7 @@ const Navbar = ({
     { name: t.findDonor, id: 'find' },
     { name: t.requests, id: 'requests' },
     { name: lang === 'en' ? 'Campaigns' : 'ক্যাম্পেইন', id: 'campaigns' },
+    { name: lang === 'en' ? 'Messages' : 'মেসেজ', id: 'messages' },
     { name: t.contact, id: 'contact' },
   ];
 
@@ -790,25 +791,45 @@ const ProfileSection = ({ user, onUpdate }: { user: UserData, onUpdate: (u: User
                 </div>
 
                 {user.type === 'donor' && (
-                  <div className="bg-accent rounded-3xl p-8">
-                    <h4 className="font-bold text-slate-900 mb-6">Donation Info</h4>
-                    <div className="grid grid-cols-2 gap-6">
-                      <div className="bg-white p-4 rounded-2xl shadow-sm">
-                        <div className="text-xs text-slate-400 uppercase font-bold mb-1">Blood Group</div>
-                        <div className="text-2xl font-bold text-primary">{user.blood_group}</div>
+                  <div className="space-y-8">
+                    <div className="bg-accent rounded-3xl p-8">
+                      <h4 className="font-bold text-slate-900 mb-6">Donation Info</h4>
+                      <div className="grid grid-cols-2 gap-6">
+                        <div className="bg-white p-4 rounded-2xl shadow-sm">
+                          <div className="text-xs text-slate-400 uppercase font-bold mb-1">Blood Group</div>
+                          <div className="text-2xl font-bold text-primary">{user.blood_group}</div>
+                        </div>
+                        <div className="bg-white p-4 rounded-2xl shadow-sm">
+                          <div className="text-xs text-slate-400 uppercase font-bold mb-1">Last Donation</div>
+                          <div className="text-sm font-bold text-slate-700">{user.last_donation || 'Never'}</div>
+                        </div>
                       </div>
-                      <div className="bg-white p-4 rounded-2xl shadow-sm">
-                        <div className="text-xs text-slate-400 uppercase font-bold mb-1">Last Donation</div>
-                        <div className="text-sm font-bold text-slate-700">{user.last_donation || 'Never'}</div>
+                      <div className="mt-8 p-4 bg-primary/5 rounded-2xl border border-primary/10 flex items-center gap-4">
+                        <div className="w-10 h-10 bg-primary/10 rounded-full flex items-center justify-center text-primary">
+                          <HeartPulse size={20} />
+                        </div>
+                        <div className="text-xs text-slate-600 leading-relaxed">
+                          Your profile is visible to people searching for donors in <b>{user.district}</b>.
+                        </div>
                       </div>
                     </div>
-                    <div className="mt-8 p-4 bg-primary/5 rounded-2xl border border-primary/10 flex items-center gap-4">
-                      <div className="w-10 h-10 bg-primary/10 rounded-full flex items-center justify-center text-primary">
-                        <HeartPulse size={20} />
-                      </div>
-                      <div className="text-xs text-slate-600 leading-relaxed">
-                        Your profile is visible to people searching for donors in <b>{user.district}</b>.
-                      </div>
+
+                    <div className="bg-white rounded-3xl p-8 border border-slate-100 shadow-sm">
+                      <h4 className="font-bold text-slate-900 mb-6">Donation History</h4>
+                      {donations.length > 0 ? (
+                        <div className="space-y-4">
+                          {donations.map((donation, i) => (
+                            <div key={i} className="flex justify-between items-center p-4 bg-slate-50 rounded-xl">
+                              <div>
+                                <div className="font-bold text-slate-900">{donation.location}</div>
+                                <div className="text-xs text-slate-500">{new Date(donation.date).toLocaleDateString()}</div>
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      ) : (
+                        <p className="text-slate-500 text-sm italic">No donation history recorded yet.</p>
+                      )}
                     </div>
                   </div>
                 )}
@@ -1306,6 +1327,76 @@ const StatsSection = ({ lang }: { lang: Language }) => {
   );
 };
 
+const BloodDriveSection = ({ user, lang }: { user: UserData | null, lang: Language }) => {
+  const [events, setEvents] = useState<any[]>([]);
+  const [title, setTitle] = useState('');
+  const [date, setDate] = useState('');
+  const [location, setLocation] = useState('');
+  const [description, setDescription] = useState('');
+
+  useEffect(() => {
+    fetch('/api/events')
+      .then(res => res.json())
+      .then(data => setEvents(data.events));
+  }, []);
+
+  const handleCreateEvent = async () => {
+    const res = await fetch('/api/events', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ title, date, location, description })
+    });
+    if (res.ok) {
+      const newEvent = await res.json();
+      setEvents([...events, { id: newEvent.id, title, date, location, description, rsvp_count: 0 }]);
+      setTitle(''); setDate(''); setLocation(''); setDescription('');
+    }
+  };
+
+  const handleRSVP = async (id: number) => {
+    if (!user) return alert("Please login to RSVP");
+    const res = await fetch(`/api/events/${id}/rsvp`, { method: 'POST' });
+    if (res.ok) {
+      setEvents(events.map(e => e.id === id ? { ...e, rsvp_count: e.rsvp_count + 1 } : e));
+    }
+  };
+
+  return (
+    <section id="events" className="py-24 bg-white">
+      <div className="max-w-7xl mx-auto px-6">
+        <h2 className="text-4xl font-bold serif text-slate-900 mb-12 text-center">Upcoming Blood Drives</h2>
+        
+        {(user?.role === 'admin' || user?.role === 'owner') && (
+          <div className="bg-accent p-8 rounded-3xl mb-12">
+            <h3 className="font-bold text-lg mb-4">Create New Event</h3>
+            <div className="grid md:grid-cols-2 gap-4">
+              <input placeholder="Title" value={title} onChange={e => setTitle(e.target.value)} className="p-4 rounded-xl" />
+              <input type="date" value={date} onChange={e => setDate(e.target.value)} className="p-4 rounded-xl" />
+              <input placeholder="Location" value={location} onChange={e => setLocation(e.target.value)} className="p-4 rounded-xl" />
+              <input placeholder="Description" value={description} onChange={e => setDescription(e.target.value)} className="p-4 rounded-xl" />
+              <button onClick={handleCreateEvent} className="bg-primary text-white p-4 rounded-xl font-bold">Create Event</button>
+            </div>
+          </div>
+        )}
+
+        <div className="grid md:grid-cols-3 gap-8">
+          {events.map(event => (
+            <div key={event.id} className="bg-white p-8 rounded-[2rem] shadow-sm border border-slate-100">
+              <h4 className="font-bold text-xl mb-2">{event.title}</h4>
+              <p className="text-slate-500 text-sm mb-4">{new Date(event.date).toLocaleDateString()} at {event.location}</p>
+              <p className="text-slate-600 mb-6">{event.description}</p>
+              <div className="flex justify-between items-center">
+                <span className="text-sm font-bold text-primary">{event.rsvp_count} RSVPs</span>
+                <button onClick={() => handleRSVP(event.id)} className="bg-slate-900 text-white px-6 py-3 rounded-xl font-bold">RSVP</button>
+              </div>
+            </div>
+          ))}
+        </div>
+      </div>
+    </section>
+  );
+};
+
 const BloodRequestsFeed = ({ onOpenChat, lang }: { onOpenChat: (id: number, name: string, isOnline?: number, lastSeen?: string) => void, lang: Language }) => {
   const [requests, setRequests] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
@@ -1398,6 +1489,41 @@ const BloodRequestsFeed = ({ onOpenChat, lang }: { onOpenChat: (id: number, name
                 </a>
               </div>
             </motion.div>
+          ))}
+        </div>
+      </div>
+    </section>
+  );
+};
+
+const MessagesPage = ({ onOpenChat, lang }: { onOpenChat: (id: number, name: string, isOnline?: number, lastSeen?: string) => void, lang: Language }) => {
+  const [conversations, setConversations] = useState<any[]>([]);
+
+  useEffect(() => {
+    fetch('/api/conversations')
+      .then(res => res.json())
+      .then(data => setConversations(data.conversations))
+      .catch(console.error);
+  }, []);
+
+  return (
+    <section className="py-24 bg-white min-h-screen">
+      <div className="max-w-3xl mx-auto px-6">
+        <h2 className="text-4xl font-bold serif text-slate-900 mb-12">Messages</h2>
+        <div className="space-y-4">
+          {conversations.map(conv => (
+            <div key={conv.id} className="bg-accent p-6 rounded-2xl flex items-center justify-between cursor-pointer hover:bg-slate-100 transition-all" onClick={() => onOpenChat(conv.id, conv.name, conv.is_online, conv.last_seen)}>
+              <div className="flex items-center gap-4">
+                <div className="w-12 h-12 bg-white rounded-full flex items-center justify-center font-bold text-primary">
+                  {conv.name[0]}
+                </div>
+                <div>
+                  <div className="font-bold text-slate-900">{conv.name}</div>
+                  <div className="text-sm text-slate-500 truncate">{conv.last_message}</div>
+                </div>
+              </div>
+              <div className="text-xs text-slate-400">{new Date(conv.last_message_at).toLocaleDateString()}</div>
+            </div>
           ))}
         </div>
       </div>
@@ -2568,6 +2694,15 @@ export default function App() {
           >
             <CampaignsPage user={user} lang={lang} />
           </motion.div>
+        ) : view === 'messages' && user ? (
+          <motion.div
+            key="messages"
+            initial={{ opacity: 0, x: 20 }}
+            animate={{ opacity: 1, x: 0 }}
+            exit={{ opacity: 0, x: -20 }}
+          >
+            <MessagesPage onOpenChat={openChat} lang={lang} />
+          </motion.div>
         ) : view === 'admin' && (user?.role === 'admin' || user?.role === 'owner') ? (
           <motion.div
             key="admin"
@@ -2587,6 +2722,7 @@ export default function App() {
             <Hero lang={lang} />
             <StatsSection lang={lang} />
             <SearchSection onOpenChat={openChat} lang={lang} />
+            <BloodDriveSection user={user} lang={lang} />
             <BloodRequestsFeed onOpenChat={openChat} lang={lang} />
             <Features lang={lang} />
             <RegisterForm onOpenAuth={(mode) => setAuthModal({ isOpen: true, mode })} />

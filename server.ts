@@ -99,6 +99,27 @@ db.exec(`
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY(user_id) REFERENCES users(id)
   );
+
+  CREATE TABLE IF NOT EXISTS blood_drives (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    title TEXT NOT NULL,
+    date TEXT NOT NULL,
+    location TEXT NOT NULL,
+    description TEXT,
+    organizer_id INTEGER,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY(organizer_id) REFERENCES users(id)
+  );
+
+  CREATE TABLE IF NOT EXISTS event_rsvps (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    event_id INTEGER,
+    user_id INTEGER,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(event_id, user_id),
+    FOREIGN KEY(event_id) REFERENCES blood_drives(id),
+    FOREIGN KEY(user_id) REFERENCES users(id)
+  );
 `);
 
 try { db.exec("ALTER TABLE blood_requests ADD COLUMN lat REAL"); } catch (e) {}
@@ -392,11 +413,41 @@ async function startServer() {
     res.json({ requests });
   });
 
-  app.get("/api/notifications", (req, res) => {
-    const user = getSessionUser(req);
+  // Blood Drives
+  app.get("/api/events", (req, res) => {
+    const events = db.prepare(`
+      SELECT e.*, 
+             (SELECT COUNT(*) FROM event_rsvps WHERE event_id = e.id) as rsvp_count
+      FROM blood_drives e
+      ORDER BY e.date ASC
+    `).all();
+    res.json({ events });
+  });
+
+  app.post("/api/events", (req, res) => {
+    const user: any = getSessionUser(req);
+    if (!user || (user.role !== 'admin' && user.role !== 'owner')) {
+      return res.status(403).json({ error: "Forbidden" });
+    }
+    const { title, date, location, description } = req.body;
+    try {
+      const info = db.prepare("INSERT INTO blood_drives (title, date, location, description, organizer_id) VALUES (?, ?, ?, ?, ?)").run(title, date, location, description, user.id);
+      res.json({ success: true, id: info.lastInsertRowid });
+    } catch (e) {
+      res.status(400).json({ error: "Failed to create event" });
+    }
+  });
+
+  app.post("/api/events/:id/rsvp", (req, res) => {
+    const user: any = getSessionUser(req);
     if (!user) return res.status(401).json({ error: "Unauthorized" });
-    const notifications = db.prepare("SELECT * FROM notifications WHERE user_id = ? ORDER BY created_at DESC LIMIT 20").all(user.id);
-    res.json({ notifications });
+    const { id } = req.params;
+    try {
+      db.prepare("INSERT INTO event_rsvps (event_id, user_id) VALUES (?, ?)").run(id, user.id);
+      res.json({ success: true });
+    } catch (e) {
+      res.status(400).json({ error: "Already RSVPed or failed" });
+    }
   });
 
   app.put("/api/notifications/read", (req, res) => {
@@ -417,6 +468,22 @@ async function startServer() {
       ORDER BY created_at ASC
     `).all(user.id, otherId, otherId, user.id);
     res.json({ messages });
+  });
+
+  app.get("/api/conversations", (req, res) => {
+    const user: any = getSessionUser(req);
+    if (!user) return res.status(401).json({ error: "Unauthorized" });
+    
+    const conversations = db.prepare(`
+      SELECT DISTINCT u.id, u.name, u.is_online, u.last_seen,
+             (SELECT content FROM messages WHERE (sender_id = u.id AND receiver_id = ?) OR (sender_id = ? AND receiver_id = u.id) ORDER BY created_at DESC LIMIT 1) as last_message,
+             (SELECT created_at FROM messages WHERE (sender_id = u.id AND receiver_id = ?) OR (sender_id = ? AND receiver_id = u.id) ORDER BY created_at DESC LIMIT 1) as last_message_at
+      FROM users u
+      JOIN messages m ON (m.sender_id = u.id AND m.receiver_id = ?) OR (m.sender_id = ? AND receiver_id = u.id)
+      WHERE u.id != ?
+    `).all(user.id, user.id, user.id, user.id, user.id, user.id, user.id);
+    
+    res.json({ conversations });
   });
 
   app.put("/api/requests/:id/status", (req, res) => {
