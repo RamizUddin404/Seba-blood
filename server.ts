@@ -28,6 +28,7 @@ db.exec(`
     email TEXT UNIQUE NOT NULL,
     password TEXT NOT NULL,
     type TEXT NOT NULL, -- 'donor' or 'public'
+    role TEXT DEFAULT 'user', -- 'user', 'admin', 'owner'
     blood_group TEXT,
     district TEXT,
     phone TEXT,
@@ -35,9 +36,25 @@ db.exec(`
     bio TEXT,
     last_donation TEXT,
     lat REAL,
-    lng REAL
+    lng REAL,
+    is_online INTEGER DEFAULT 0,
+    last_seen DATETIME DEFAULT CURRENT_TIMESTAMP,
+    is_verified INTEGER DEFAULT 0
   );
+`);
+// Ignore errors from ALTER TABLE if columns already exist
+try { db.exec("ALTER TABLE users ADD COLUMN role TEXT DEFAULT 'user'"); } catch (e) {}
+try { db.exec("ALTER TABLE users ADD COLUMN status TEXT DEFAULT 'active'"); } catch (e) {}
+try { db.exec("ALTER TABLE users ADD COLUMN is_online INTEGER DEFAULT 0"); } catch (e) {}
+try { db.exec("ALTER TABLE users ADD COLUMN last_seen TEXT"); } catch (e) {}
+try { db.exec("ALTER TABLE users ADD COLUMN lat REAL"); } catch (e) {}
+try { db.exec("ALTER TABLE users ADD COLUMN lng REAL"); } catch (e) {}
+try { db.exec("ALTER TABLE users ADD COLUMN is_verified INTEGER DEFAULT 0"); } catch (e) {}
 
+// Set owner role
+db.exec("UPDATE users SET role = 'owner' WHERE email = 'romij2882@gmail.com'");
+
+db.exec(`
   CREATE TABLE IF NOT EXISTS blood_requests (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     user_id INTEGER,
@@ -50,6 +67,14 @@ db.exec(`
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
     lat REAL,
     lng REAL,
+    FOREIGN KEY(user_id) REFERENCES users(id)
+  );
+
+  CREATE TABLE IF NOT EXISTS donations (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER,
+    date TEXT NOT NULL,
+    location TEXT NOT NULL,
     FOREIGN KEY(user_id) REFERENCES users(id)
   );
 
@@ -76,6 +101,9 @@ db.exec(`
   );
 `);
 
+try { db.exec("ALTER TABLE blood_requests ADD COLUMN lat REAL"); } catch (e) {}
+try { db.exec("ALTER TABLE blood_requests ADD COLUMN lng REAL"); } catch (e) {}
+
 async function startServer() {
   const app = express();
   const server = http.createServer(app);
@@ -98,7 +126,34 @@ async function startServer() {
     const userId = cookies?.userId ? parseInt(cookies.userId) : null;
     if (userId) {
       clients.set(userId, ws);
-      ws.on('close', () => clients.delete(userId));
+      
+      // Update online status
+      try {
+        db.prepare("UPDATE users SET is_online = 1, last_seen = CURRENT_TIMESTAMP WHERE id = ?").run(userId);
+        // Broadcast online status
+        clients.forEach((clientWs, id) => {
+          if (id !== userId && clientWs.readyState === WebSocket.OPEN) {
+            clientWs.send(JSON.stringify({ type: 'status_change', userId, isOnline: 1, lastSeen: new Date().toISOString() }));
+          }
+        });
+      } catch (e) {
+        console.error("Error updating online status:", e);
+      }
+
+      ws.on('close', () => {
+        clients.delete(userId);
+        try {
+          db.prepare("UPDATE users SET is_online = 0, last_seen = CURRENT_TIMESTAMP WHERE id = ?").run(userId);
+          // Broadcast offline status
+          clients.forEach((clientWs, id) => {
+            if (id !== userId && clientWs.readyState === WebSocket.OPEN) {
+              clientWs.send(JSON.stringify({ type: 'status_change', userId, isOnline: 0, lastSeen: new Date().toISOString() }));
+            }
+          });
+        } catch (e) {
+          console.error("Error updating offline status:", e);
+        }
+      });
     }
 
     ws.on('message', async (data) => {
@@ -140,7 +195,9 @@ async function startServer() {
   const getSessionUser = (req: any) => {
     const userId = req.cookies.userId;
     if (!userId) return null;
-    return db.prepare("SELECT * FROM users WHERE id = ?").get(userId);
+    const user = db.prepare("SELECT * FROM users WHERE id = ?").get(userId) as any;
+    if (!user || user.status === 'banned' || user.status === 'suspended') return null;
+    return user;
   };
 
   // OpenRouteService Distance Verification (Mocked if no key, but logic is there)
@@ -195,6 +252,12 @@ async function startServer() {
     const { email, password } = req.body;
     const user: any = db.prepare("SELECT * FROM users WHERE email = ? AND password = ?").get(email, password);
     if (user) {
+      if (user.status === 'banned') {
+        return res.status(403).json({ error: "Your account has been banned." });
+      }
+      if (user.status === 'suspended') {
+        return res.status(403).json({ error: "Your account is temporarily suspended." });
+      }
       res.cookie("userId", user.id, { 
         httpOnly: true, 
         secure: true, 
@@ -247,7 +310,7 @@ async function startServer() {
 
   app.get("/api/donors", (req, res) => {
     const { blood_group, district } = req.query;
-    let query = "SELECT id, name, blood_group, district, phone, photo, bio, lat, lng FROM users WHERE type = 'donor'";
+    let query = "SELECT id, name, blood_group, district, phone, photo, bio, lat, lng, is_online, last_seen FROM users WHERE type = 'donor'";
     const params: any[] = [];
 
     if (blood_group) {
@@ -320,14 +383,19 @@ async function startServer() {
   });
 
   app.get("/api/requests", (req, res) => {
-    const requests = db.prepare("SELECT * FROM blood_requests ORDER BY created_at DESC").all();
+    const requests = db.prepare(`
+      SELECT r.*, u.is_online, u.last_seen, u.name as requester_name 
+      FROM blood_requests r
+      LEFT JOIN users u ON r.user_id = u.id
+      ORDER BY r.created_at DESC
+    `).all();
     res.json({ requests });
   });
 
   app.get("/api/notifications", (req, res) => {
     const user = getSessionUser(req);
     if (!user) return res.status(401).json({ error: "Unauthorized" });
-    const notifications = db.prepare("SELECT * FROM notifications WHERE user_id = ? ORDER BY created_at DESC LIMIT 20").all();
+    const notifications = db.prepare("SELECT * FROM notifications WHERE user_id = ? ORDER BY created_at DESC LIMIT 20").all(user.id);
     res.json({ notifications });
   });
 
@@ -378,6 +446,73 @@ async function startServer() {
       pending: pendingRequests,
       success: successRequests
     });
+  });
+
+  app.post("/api/donations", (req, res) => {
+    const user: any = getSessionUser(req);
+    if (!user) return res.status(401).json({ error: "Unauthorized" });
+    const { date, location } = req.body;
+    db.prepare("INSERT INTO donations (user_id, date, location) VALUES (?, ?, ?)").run(user.id, date, location);
+    res.json({ success: true });
+  });
+
+  app.get("/api/donations/:userId", (req, res) => {
+    const { userId } = req.params;
+    const donations = db.prepare("SELECT * FROM donations WHERE user_id = ? ORDER BY date DESC").all(userId);
+    res.json({ donations });
+  });
+
+  app.put("/api/admin/users/:id/verify", (req, res) => {
+    const user: any = getSessionUser(req);
+    if (!user || (user.role !== 'admin' && user.role !== 'owner')) return res.status(401).json({ error: "Unauthorized" });
+    const { is_verified } = req.body;
+    const { id } = req.params;
+    db.prepare("UPDATE users SET is_verified = ? WHERE id = ?").run(is_verified ? 1 : 0, id);
+    res.json({ success: true });
+  });
+
+  // Admin Routes
+  app.get("/api/admin/users", (req, res) => {
+    const user: any = getSessionUser(req);
+    if (!user || (user.role !== 'admin' && user.role !== 'owner')) {
+      return res.status(403).json({ error: "Forbidden" });
+    }
+    const users = db.prepare("SELECT id, name, email, type, role, status, is_online, last_seen FROM users ORDER BY id DESC").all();
+    res.json({ users });
+  });
+
+  app.put("/api/admin/users/:id/role", (req, res) => {
+    const user: any = getSessionUser(req);
+    if (!user || user.role !== 'owner') {
+      return res.status(403).json({ error: "Forbidden" });
+    }
+    
+    const { role } = req.body;
+    const { id } = req.params;
+
+    try {
+      db.prepare("UPDATE users SET role = ? WHERE id = ?").run(role, id);
+      res.json({ success: true });
+    } catch (e) {
+      res.status(400).json({ error: "Update failed" });
+    }
+  });
+
+  app.put("/api/admin/users/:id/status", (req, res) => {
+    const user: any = getSessionUser(req);
+    if (!user || (user.role !== 'admin' && user.role !== 'owner')) {
+      return res.status(403).json({ error: "Forbidden" });
+    }
+    
+    const { status } = req.body;
+    const { id } = req.params;
+
+    try {
+      db.prepare("UPDATE users SET status = ? WHERE id = ?").run(status, id);
+      res.json({ success: true });
+    } catch (e) {
+      res.status(400).json({ error: "Update failed" });
+    }
   });
 
   // Vite middleware for development

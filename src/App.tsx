@@ -33,8 +33,22 @@ import {
   UserPlus,
   Navigation,
   Mail,
-  Users
+  Users,
+  Bot,
+  Filter
 } from 'lucide-react';
+import { GoogleGenAI } from "@google/genai";
+import { MapContainer, TileLayer, Marker, Popup } from 'react-leaflet';
+import L from 'leaflet';
+import 'leaflet/dist/leaflet.css';
+let DefaultIcon = L.icon({
+    iconUrl: 'https://unpkg.com/leaflet@1.9.4/dist/images/marker-icon.png',
+    shadowUrl: 'https://unpkg.com/leaflet@1.9.4/dist/images/marker-shadow.png',
+    iconSize: [25, 41],
+    iconAnchor: [12, 41]
+});
+
+L.Marker.prototype.options.icon = DefaultIcon;
 
 import { translations, Language } from './translations';
 
@@ -44,6 +58,7 @@ interface UserData {
   name: string;
   email: string;
   type: 'donor' | 'public';
+  role?: 'user' | 'admin' | 'owner';
   blood_group?: string;
   district?: string;
   phone?: string;
@@ -52,6 +67,9 @@ interface UserData {
   last_donation?: string;
   lat?: number;
   lng?: number;
+  is_online?: number;
+  last_seen?: string;
+  is_verified?: number;
 }
 
 interface BloodRequest {
@@ -66,6 +84,22 @@ interface BloodRequest {
   created_at: string;
   lat?: number;
   lng?: number;
+  is_online?: number;
+  last_seen?: string;
+  requester_name?: string;
+}
+
+interface Campaign {
+  id: number;
+  title: string;
+  description: string;
+  location: string;
+  date: string;
+  target_donors: number;
+  registered_donors: number;
+  status: 'active' | 'completed' | 'cancelled';
+  created_at: string;
+  user_id: number;
 }
 
 interface Notification {
@@ -112,7 +146,7 @@ const Navbar = ({
   onOpenAuth: (mode: 'login' | 'register') => void,
   notifications: Notification[],
   unreadCount: number,
-  onOpenChat: (id: number, name: string) => void,
+  onOpenChat: (id: number, name: string, isOnline?: number, lastSeen?: string) => void,
   onMarkRead: () => void,
   lang: Language,
   setLang: (l: Language) => void,
@@ -134,8 +168,13 @@ const Navbar = ({
     { name: t.home, id: 'home' },
     { name: t.findDonor, id: 'find' },
     { name: t.requests, id: 'requests' },
+    { name: lang === 'en' ? 'Campaigns' : 'ক্যাম্পেইন', id: 'campaigns' },
     { name: t.contact, id: 'contact' },
   ];
+
+  if (user?.role === 'admin' || user?.role === 'owner') {
+    navLinks.push({ name: lang === 'en' ? 'Admin Panel' : 'অ্যাডমিন প্যানেল', id: 'admin' });
+  }
 
   return (
     <nav className={`fixed w-full z-50 transition-all duration-300 ${scrolled ? 'bg-white/95 backdrop-blur-md shadow-md py-3' : 'bg-transparent py-5'}`}>
@@ -322,14 +361,18 @@ const Navbar = ({
 const ChatBox = ({ 
   user, 
   otherId, 
-  otherName, 
+  otherName,
+  isOnline,
+  lastSeen,
   onClose, 
   messages, 
   onSendMessage 
 }: { 
   user: UserData, 
   otherId: number, 
-  otherName: string, 
+  otherName: string,
+  isOnline?: number,
+  lastSeen?: string,
   onClose: () => void,
   messages: Message[],
   onSendMessage: (content: string) => void
@@ -359,12 +402,17 @@ const ChatBox = ({
     >
       <div className="p-6 bg-primary text-white flex justify-between items-center">
         <div className="flex items-center gap-3">
-          <div className="w-10 h-10 bg-white/20 rounded-xl flex items-center justify-center">
+          <div className="w-10 h-10 bg-white/20 rounded-xl flex items-center justify-center relative">
             <User size={20} />
+            {isOnline === 1 && (
+              <span className="absolute -bottom-1 -right-1 w-3 h-3 bg-green-400 border-2 border-primary rounded-full"></span>
+            )}
           </div>
           <div>
             <div className="font-bold text-sm leading-none">{otherName}</div>
-            <div className="text-[10px] opacity-70 mt-1">Online</div>
+            <div className="text-[10px] opacity-70 mt-1">
+              {isOnline === 1 ? 'Online' : lastSeen ? `Last seen: ${new Date(lastSeen).toLocaleDateString()}` : 'Offline'}
+            </div>
           </div>
         </div>
         <button onClick={onClose} className="hover:bg-white/20 p-2 rounded-lg transition-colors">
@@ -557,6 +605,9 @@ const ProfileSection = ({ user, onUpdate }: { user: UserData, onUpdate: (u: User
   const [editing, setEditing] = useState(false);
   const [loading, setLoading] = useState(false);
   const [myRequests, setMyRequests] = useState<any[]>([]);
+  const [donations, setDonations] = useState<any[]>([]);
+  const [newDonationDate, setNewDonationDate] = useState('');
+  const [newDonationLocation, setNewDonationLocation] = useState('');
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
@@ -565,7 +616,24 @@ const ProfileSection = ({ user, onUpdate }: { user: UserData, onUpdate: (u: User
       .then(data => {
         setMyRequests(data.requests.filter((r: any) => r.user_id === user.id));
       });
+    fetch(`/api/donations/${user.id}`)
+      .then(res => res.json())
+      .then(data => setDonations(data.donations));
   }, [user.id]);
+
+  const handleLogDonation = async () => {
+    if (!newDonationDate || !newDonationLocation) return;
+    setLoading(true);
+    await fetch('/api/donations', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ date: newDonationDate, location: newDonationLocation })
+    });
+    setDonations([{ date: newDonationDate, location: newDonationLocation }, ...donations]);
+    setNewDonationDate('');
+    setNewDonationLocation('');
+    setLoading(false);
+  };
 
   const updateRequestStatus = async (id: number, status: string) => {
     try {
@@ -702,6 +770,10 @@ const ProfileSection = ({ user, onUpdate }: { user: UserData, onUpdate: (u: User
                       <MapPin size={18} className="text-slate-400" />
                       <span>{user.district || 'Not provided'}</span>
                     </div>
+                    <div className="flex items-center gap-4 text-slate-600">
+                      <Droplet size={18} className="text-slate-400" />
+                      <span>{user.blood_group || 'Not provided'}</span>
+                    </div>
                   </div>
 
                   <div className="mt-8">
@@ -748,24 +820,26 @@ const ProfileSection = ({ user, onUpdate }: { user: UserData, onUpdate: (u: User
                     <input name="phone" defaultValue={user.phone} className="w-full px-6 py-4 bg-accent rounded-2xl outline-none font-semibold" />
                   </div>
                 </div>
+                <div className="grid md:grid-cols-2 gap-6">
+                  <div>
+                    <label className="block text-xs font-bold text-slate-400 uppercase tracking-widest mb-2 ml-1">Blood Group</label>
+                    <select name="blood_group" defaultValue={user.blood_group} className="w-full px-4 py-4 bg-accent rounded-2xl outline-none font-semibold appearance-none">
+                      <option value="">Select Blood Group</option>
+                      {BLOOD_GROUPS.map(g => <option key={g} value={g}>{g}</option>)}
+                    </select>
+                  </div>
+                  <div>
+                    <label className="block text-xs font-bold text-slate-400 uppercase tracking-widest mb-2 ml-1">District</label>
+                    <select name="district" defaultValue={user.district} className="w-full px-4 py-4 bg-accent rounded-2xl outline-none font-semibold appearance-none">
+                      <option value="">Select District</option>
+                      {DISTRICTS.map(d => <option key={d} value={d}>{d}</option>)}
+                    </select>
+                  </div>
+                </div>
                 {user.type === 'donor' && (
-                  <div className="grid md:grid-cols-3 gap-6">
-                    <div>
-                      <label className="block text-xs font-bold text-slate-400 uppercase tracking-widest mb-2 ml-1">Blood Group</label>
-                      <select name="blood_group" defaultValue={user.blood_group} className="w-full px-4 py-4 bg-accent rounded-2xl outline-none font-semibold appearance-none">
-                        {BLOOD_GROUPS.map(g => <option key={g} value={g}>{g}</option>)}
-                      </select>
-                    </div>
-                    <div>
-                      <label className="block text-xs font-bold text-slate-400 uppercase tracking-widest mb-2 ml-1">District</label>
-                      <select name="district" defaultValue={user.district} className="w-full px-4 py-4 bg-accent rounded-2xl outline-none font-semibold appearance-none">
-                        {DISTRICTS.map(d => <option key={d} value={d}>{d}</option>)}
-                      </select>
-                    </div>
-                    <div>
-                      <label className="block text-xs font-bold text-slate-400 uppercase tracking-widest mb-2 ml-1">Last Donation</label>
-                      <input name="last_donation" type="date" defaultValue={user.last_donation} className="w-full px-4 py-4 bg-accent rounded-2xl outline-none font-semibold" />
-                    </div>
+                  <div>
+                    <label className="block text-xs font-bold text-slate-400 uppercase tracking-widest mb-2 ml-1">Last Donation</label>
+                    <input name="last_donation" type="date" defaultValue={user.last_donation} className="w-full px-4 py-4 bg-accent rounded-2xl outline-none font-semibold" />
                   </div>
                 )}
                 <div>
@@ -933,7 +1007,7 @@ const Hero = ({ lang }: { lang: Language }) => {
   );
 };
 
-const SearchSection = ({ onOpenChat, lang }: { onOpenChat: (id: number, name: string) => void, lang: Language }) => {
+const SearchSection = ({ onOpenChat, lang }: { onOpenChat: (id: number, name: string, isOnline?: number, lastSeen?: string) => void, lang: Language }) => {
   const t = translations[lang].search;
   const [bloodGroup, setBloodGroup] = useState('');
   const [district, setDistrict] = useState('');
@@ -1025,7 +1099,19 @@ const SearchSection = ({ onOpenChat, lang }: { onOpenChat: (id: number, name: st
                         </div>
                       )}
                       <div>
-                        <div className="font-bold text-slate-900">{donor.name}</div>
+                        <div className="font-bold text-slate-900 flex items-center gap-2">
+                          {donor.name}
+                          {donor.is_verified === 1 && (
+                            <span className="bg-blue-100 text-blue-600 px-1.5 py-0.5 rounded-full text-[9px] font-bold">Verified</span>
+                          )}
+                          {donor.is_online === 1 ? (
+                            <span className="w-2 h-2 bg-green-500 rounded-full" title="Online"></span>
+                          ) : donor.last_seen ? (
+                            <span className="text-[10px] font-normal text-slate-400">
+                              {new Date(donor.last_seen).toLocaleDateString()}
+                            </span>
+                          ) : null}
+                        </div>
                         <div className="text-xs text-slate-500 flex items-center gap-1">
                           <MapPin size={12} /> {donor.district}
                         </div>
@@ -1040,7 +1126,7 @@ const SearchSection = ({ onOpenChat, lang }: { onOpenChat: (id: number, name: st
                       </div>
                       <div className="flex gap-2">
                         <button 
-                          onClick={() => onOpenChat(donor.id, donor.name)}
+                          onClick={() => onOpenChat(donor.id, donor.name, donor.is_online, donor.last_seen)}
                           className="bg-white text-slate-600 p-3 rounded-xl hover:bg-primary hover:text-white transition-all shadow-sm"
                         >
                           <MessageSquare size={18} />
@@ -1215,7 +1301,7 @@ const StatsSection = ({ lang }: { lang: Language }) => {
   );
 };
 
-const BloodRequestsFeed = ({ onOpenChat, lang }: { onOpenChat: (id: number, name: string) => void, lang: Language }) => {
+const BloodRequestsFeed = ({ onOpenChat, lang }: { onOpenChat: (id: number, name: string, isOnline?: number, lastSeen?: string) => void, lang: Language }) => {
   const [requests, setRequests] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const t = translations[lang].requests;
@@ -1260,7 +1346,16 @@ const BloodRequestsFeed = ({ onOpenChat, lang }: { onOpenChat: (id: number, name
                   {req.blood_group}
                 </div>
                 <div>
-                  <h4 className="font-bold text-slate-900">{req.patient_name}</h4>
+                  <h4 className="font-bold text-slate-900 flex items-center gap-2">
+                    {req.patient_name}
+                    {req.is_online === 1 ? (
+                      <span className="w-2 h-2 bg-green-500 rounded-full" title="Online"></span>
+                    ) : req.last_seen ? (
+                      <span className="text-[10px] font-normal text-slate-400">
+                        {new Date(req.last_seen).toLocaleDateString()}
+                      </span>
+                    ) : null}
+                  </h4>
                   <p className="text-xs text-slate-400 flex items-center gap-1">
                     <MapPin size={12} /> {req.hospital}, {req.district}
                   </p>
@@ -1282,7 +1377,7 @@ const BloodRequestsFeed = ({ onOpenChat, lang }: { onOpenChat: (id: number, name
 
               <div className="flex gap-3">
                 <button 
-                  onClick={() => onOpenChat(req.user_id, req.patient_name)}
+                  onClick={() => onOpenChat(req.user_id, req.requester_name || req.patient_name, req.is_online, req.last_seen)}
                   className="flex-1 bg-white text-slate-900 border border-slate-200 py-4 rounded-2xl font-bold flex items-center justify-center gap-3 hover:bg-slate-50 transition-all"
                 >
                   <MessageSquare size={18} /> {t.chat}
@@ -1302,7 +1397,7 @@ const BloodRequestsFeed = ({ onOpenChat, lang }: { onOpenChat: (id: number, name
   );
 };
 
-const RequestsPage = ({ onOpenChat, lang }: { onOpenChat: (id: number, name: string) => void, lang: Language }) => {
+const RequestsPage = ({ onOpenChat, lang }: { onOpenChat: (id: number, name: string, isOnline?: number, lastSeen?: string) => void, lang: Language }) => {
   const [requests, setRequests] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [filter, setFilter] = useState('');
@@ -1360,64 +1455,521 @@ const RequestsPage = ({ onOpenChat, lang }: { onOpenChat: (id: number, name: str
             <p className="text-slate-400">Be the first to help or post a request.</p>
           </div>
         ) : (
-          <div className="grid md:grid-cols-2 lg:grid-cols-3 gap-8">
-            {filteredRequests.map((req) => (
-              <motion.div 
-                key={req.id}
-                initial={{ opacity: 0, y: 20 }}
-                animate={{ opacity: 1, y: 0 }}
-                className="bg-white p-8 rounded-[2.5rem] shadow-sm border border-slate-100 relative overflow-hidden group hover:shadow-xl transition-all"
-              >
-                {req.status === 'pending' && (
-                  <div className="absolute top-6 right-6 flex items-center gap-1 px-3 py-1 bg-orange-100 text-orange-600 rounded-full text-[10px] font-bold uppercase tracking-wider">
-                    <Clock size={12} /> {t.urgent}
-                  </div>
-                )}
-                
-                <div className="flex items-center gap-4 mb-6">
-                  <div className="w-14 h-14 bg-primary text-white rounded-2xl flex items-center justify-center font-bold text-xl shadow-lg shadow-primary/20">
-                    {req.blood_group}
-                  </div>
-                  <div>
-                    <h4 className="font-bold text-slate-900 text-lg">{req.patient_name}</h4>
-                    <p className="text-xs text-slate-400 flex items-center gap-1">
-                      <MapPin size={12} /> {req.hospital}, {req.district}
-                    </p>
-                  </div>
-                </div>
-
-                <div className="space-y-4 mb-8">
-                  <div className="flex justify-between text-sm">
-                    <span className="text-slate-400">{t.posted}</span>
-                    <span className="text-slate-700 font-medium">{new Date(req.created_at).toLocaleDateString()}</span>
-                  </div>
-                  <div className="flex justify-between text-sm">
-                    <span className="text-slate-400">{t.status}</span>
-                    <span className={`font-bold uppercase text-[10px] tracking-widest ${req.status === 'success' ? 'text-green-600' : 'text-orange-600'}`}>
+          <>
+            <div className="h-[400px] w-full rounded-[2rem] overflow-hidden mb-12 shadow-lg">
+              <MapContainer center={[23.685, 90.356]} zoom={7} className="h-full w-full">
+                <TileLayer url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png" />
+                {filteredRequests.filter(r => r.lat && r.lng).map(r => (
+                  <Marker key={r.id} position={[r.lat!, r.lng!]}>
+                    <Popup>
+                      <div className="font-bold">{r.patient_name}</div>
+                      <div>{r.hospital}</div>
+                    </Popup>
+                  </Marker>
+                ))}
+              </MapContainer>
+            </div>
+            <div className="grid md:grid-cols-2 lg:grid-cols-3 gap-8">
+              {filteredRequests.map((req) => (
+                <motion.div 
+                  key={req.id}
+                  initial={{ opacity: 0, y: 20 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  className="bg-white p-8 rounded-[2.5rem] shadow-sm border border-slate-100 relative overflow-hidden group hover:shadow-xl transition-all"
+                >
+                  <div className="flex justify-between items-start mb-6">
+                    <div className="bg-primary text-white px-4 py-2 rounded-xl font-bold text-xl">
+                      {req.blood_group}
+                    </div>
+                    <span className={`px-3 py-1 rounded-full text-xs font-bold uppercase tracking-wider ${req.status === 'pending' ? 'bg-orange-100 text-orange-600' : 'bg-green-100 text-green-600'}`}>
                       {req.status}
                     </span>
                   </div>
-                </div>
-
-                <div className="flex gap-3">
-                  <button 
-                    onClick={() => onOpenChat(req.user_id, req.patient_name)}
-                    className="flex-1 bg-white text-slate-900 border border-slate-200 py-4 rounded-2xl font-bold flex items-center justify-center gap-3 hover:bg-slate-50 transition-all"
-                  >
-                    <MessageSquare size={18} /> {t.chat}
-                  </button>
-                  <a 
-                    href={`tel:${req.phone}`}
-                    className="flex-1 bg-slate-900 text-white py-4 rounded-2xl font-bold flex items-center justify-center gap-3 hover:bg-primary transition-all"
-                  >
-                    <Phone size={18} /> {t.call}
-                  </a>
-                </div>
-              </motion.div>
-            ))}
-          </div>
+                  <h3 className="text-xl font-bold text-slate-900 mb-2">{req.patient_name}</h3>
+                  <p className="text-slate-500 mb-4">{req.hospital}, {req.district}</p>
+                  <div className="text-sm text-slate-400 mb-6">
+                    {new Date(req.created_at).toLocaleDateString()}
+                  </div>
+                  <div className="flex gap-4">
+                    <button 
+                      onClick={() => onOpenChat(req.user_id, req.requester_name || 'User', req.is_online, req.last_seen)}
+                      className="flex-1 bg-slate-100 text-slate-600 py-3 rounded-xl font-bold hover:bg-slate-200 transition-all"
+                    >
+                      Chat
+                    </button>
+                    <a 
+                      href={`tel:${req.phone}`}
+                      className="flex-1 bg-primary text-white py-3 rounded-xl font-bold text-center hover:bg-secondary transition-all"
+                    >
+                      Call
+                    </a>
+                  </div>
+                  {req.status === 'pending' && (
+                    <div className="absolute top-6 right-6 flex items-center gap-1 px-3 py-1 bg-orange-100 text-orange-600 rounded-full text-[10px] font-bold uppercase tracking-wider">
+                      <Clock size={12} /> {t.urgent}
+                    </div>
+                  )}
+                </motion.div>
+              ))}
+            </div>
+          </>
         )}
       </div>
+    </div>
+  );
+};
+
+const CampaignsPage = ({ user, lang }: { user: UserData | null, lang: Language }) => {
+  const [campaigns, setCampaigns] = useState<Campaign[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [showForm, setShowForm] = useState(false);
+  const [newCampaign, setNewCampaign] = useState({ title: '', description: '', location: '', date: '', target_donors: 0 });
+
+  useEffect(() => {
+    fetch('/api/campaigns')
+      .then(res => res.json())
+      .then(data => {
+        setCampaigns(data.campaigns);
+        setLoading(false);
+      });
+  }, []);
+
+  const handleCreateCampaign = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setLoading(true);
+    const res = await fetch('/api/campaigns', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(newCampaign)
+    });
+    if (res.ok) {
+      const data = await res.json();
+      setCampaigns([...campaigns, data.campaign]);
+      setShowForm(false);
+      setNewCampaign({ title: '', description: '', location: '', date: '', target_donors: 0 });
+    }
+    setLoading(false);
+  };
+
+  return (
+    <div className="pt-32 pb-24 bg-accent min-h-screen">
+      <div className="max-w-7xl mx-auto px-6">
+        <div className="flex justify-between items-center mb-16">
+          <h1 className="text-5xl font-bold serif text-slate-900">{lang === 'en' ? 'Campaigns' : 'ক্যাম্পেইন'}</h1>
+          {user && (
+            <button onClick={() => setShowForm(!showForm)} className="bg-primary text-white px-8 py-4 rounded-2xl font-bold">
+              {showForm ? (lang === 'en' ? 'Cancel' : 'বাতিল') : (lang === 'en' ? 'Create Campaign' : 'ক্যাম্পেইন তৈরি করুন')}
+            </button>
+          )}
+        </div>
+        
+        {showForm && (
+          <form onSubmit={handleCreateCampaign} className="bg-white p-8 rounded-[2rem] shadow-lg mb-12 space-y-4">
+            <input type="text" placeholder="Title" value={newCampaign.title} onChange={e => setNewCampaign({...newCampaign, title: e.target.value})} className="w-full p-4 bg-accent rounded-xl" required />
+            <textarea placeholder="Description" value={newCampaign.description} onChange={e => setNewCampaign({...newCampaign, description: e.target.value})} className="w-full p-4 bg-accent rounded-xl" required />
+            <input type="text" placeholder="Location" value={newCampaign.location} onChange={e => setNewCampaign({...newCampaign, location: e.target.value})} className="w-full p-4 bg-accent rounded-xl" required />
+            <input type="date" value={newCampaign.date} onChange={e => setNewCampaign({...newCampaign, date: e.target.value})} className="w-full p-4 bg-accent rounded-xl" required />
+            <input type="number" placeholder="Target Donors" value={newCampaign.target_donors} onChange={e => setNewCampaign({...newCampaign, target_donors: parseInt(e.target.value)})} className="w-full p-4 bg-accent rounded-xl" required />
+            <button type="submit" className="bg-primary text-white px-8 py-4 rounded-2xl font-bold">Create</button>
+          </form>
+        )}
+        
+        <div className="grid md:grid-cols-2 lg:grid-cols-3 gap-8">
+          {campaigns.map(c => (
+            <div key={c.id} className="bg-white p-8 rounded-[2rem] shadow-sm border border-slate-100">
+              <h3 className="text-xl font-bold mb-2">{c.title}</h3>
+              <p className="text-slate-500 mb-4">{c.description}</p>
+              <div className="text-sm text-slate-400 mb-2">Location: {c.location}</div>
+              <div className="text-sm text-slate-400 mb-4">Date: {new Date(c.date).toLocaleDateString()}</div>
+              <div className="text-sm font-bold text-primary">Target: {c.target_donors}</div>
+            </div>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+};
+
+const AdminPanel = ({ user, lang }: { user: UserData, lang: Language }) => {
+  const [users, setUsers] = useState<UserData[]>([]);
+  const [requests, setRequests] = useState<BloodRequest[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [activeTab, setActiveTab] = useState<'users' | 'requests'>('users');
+  const [selectedUsers, setSelectedUsers] = useState<number[]>([]);
+  const [roleFilter, setRoleFilter] = useState<string>('all');
+  const [statusFilter, setStatusFilter] = useState<string>('all');
+  const [requestStatusFilter, setRequestStatusFilter] = useState<string>('all');
+  const [requestSearch, setRequestSearch] = useState<string>('');
+  const [selectedUserForModal, setSelectedUserForModal] = useState<UserData | null>(null);
+
+  useEffect(() => {
+    const fetchData = async () => {
+      try {
+        const [usersRes, requestsRes] = await Promise.all([
+          fetch('/api/admin/users'),
+          fetch('/api/requests')
+        ]);
+        if (usersRes.ok) {
+          const userData = await usersRes.json();
+          setUsers(userData.users);
+        }
+        if (requestsRes.ok) {
+          const reqData = await requestsRes.json();
+          setRequests(reqData.requests);
+        }
+      } catch (e) {
+        console.error(e);
+      } finally {
+        setLoading(false);
+      }
+    };
+    fetchData();
+  }, []);
+
+  const handleRoleChange = async (userId: number, newRole: string) => {
+    if (user.role !== 'owner') return; // Only owner can change roles
+    
+    try {
+      const res = await fetch(`/api/admin/users/${userId}/role`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ role: newRole })
+      });
+      if (res.ok) {
+        setUsers(users.map(u => u.id === userId ? { ...u, role: newRole as any } : u));
+      }
+    } catch (e) {
+      console.error(e);
+    }
+  };
+
+  const handleStatusChange = async (userId: number, newStatus: string) => {
+    try {
+      const res = await fetch(`/api/admin/users/${userId}/status`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ status: newStatus })
+      });
+      if (res.ok) {
+        setUsers(users.map(u => u.id === userId ? { ...u, status: newStatus } : u));
+      }
+    } catch (e) {
+      console.error(e);
+    }
+  };
+
+  const handleBulkStatusChange = async (newStatus: string) => {
+    if (selectedUsers.length === 0) return;
+    try {
+      const promises = selectedUsers.map(id => 
+        fetch(`/api/admin/users/${id}/status`, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ status: newStatus })
+        })
+      );
+      await Promise.all(promises);
+      setUsers(users.map(u => selectedUsers.includes(u.id) ? { ...u, status: newStatus } : u));
+      setSelectedUsers([]);
+    } catch (e) {
+      console.error(e);
+    }
+  };
+
+  const filteredUsers = users.filter(u => {
+    if (roleFilter !== 'all' && (u.role || 'user') !== roleFilter) return false;
+    if (statusFilter !== 'all' && (u.status || 'active') !== statusFilter) return false;
+    return true;
+  });
+
+  const filteredRequests = requests.filter(r => {
+    if (requestStatusFilter !== 'all' && r.status !== requestStatusFilter) return false;
+    if (requestSearch && !r.patient_name.toLowerCase().includes(requestSearch.toLowerCase())) return false;
+    return true;
+  });
+
+  const handleSelectAll = (e: React.ChangeEvent<HTMLInputElement>) => {
+    if (e.target.checked) {
+      setSelectedUsers(filteredUsers.map(u => u.id));
+    } else {
+      setSelectedUsers([]);
+    }
+  };
+
+  const handleSelectUser = (id: number) => {
+    setSelectedUsers(prev => 
+      prev.includes(id) ? prev.filter(uid => uid !== id) : [...prev, id]
+    );
+  };
+
+  if (user.role !== 'admin' && user.role !== 'owner') {
+    return <div className="pt-32 pb-24 text-center text-red-500">Access Denied</div>;
+  }
+
+  return (
+    <div className="pt-32 pb-24 min-h-screen bg-slate-50">
+      <div className="max-w-7xl mx-auto px-6">
+        <div className="mb-12">
+          <h2 className="text-4xl font-bold serif text-slate-900 mb-4">
+            {lang === 'en' ? 'Admin Panel' : 'অ্যাডমিন প্যানেল'}
+          </h2>
+          <p className="text-slate-500">
+            {lang === 'en' ? 'Manage users and platform settings.' : 'ব্যবহারকারী এবং প্ল্যাটফর্ম সেটিংস পরিচালনা করুন।'}
+          </p>
+        </div>
+
+        <div className="flex gap-4 mb-8">
+          <button 
+            onClick={() => setActiveTab('users')}
+            className={`px-6 py-3 rounded-xl font-bold transition-all ${activeTab === 'users' ? 'bg-primary text-white' : 'bg-white text-slate-600 hover:bg-slate-100'}`}
+          >
+            Users
+          </button>
+          <button 
+            onClick={() => setActiveTab('requests')}
+            className={`px-6 py-3 rounded-xl font-bold transition-all ${activeTab === 'requests' ? 'bg-primary text-white' : 'bg-white text-slate-600 hover:bg-slate-100'}`}
+          >
+            Requests
+          </button>
+        </div>
+
+        <div className="bg-white rounded-[2rem] shadow-sm border border-slate-100 overflow-hidden">
+          {activeTab === 'users' ? (
+            <>
+              <div className="p-8 border-b border-slate-100 flex flex-wrap items-center justify-between gap-4">
+                <h3 className="text-xl font-bold text-slate-900">
+                  {lang === 'en' ? 'Users Directory' : 'ব্যবহারকারী ডিরেক্টরি'}
+                </h3>
+                <div className="flex items-center gap-4">
+                  {selectedUsers.length > 0 && (
+                    <div className="flex items-center gap-2 mr-4">
+                      <span className="text-sm text-slate-500 font-medium">{selectedUsers.length} selected</span>
+                      <select 
+                        onChange={(e) => {
+                          if (e.target.value) {
+                            handleBulkStatusChange(e.target.value);
+                            e.target.value = "";
+                          }
+                        }}
+                        className="bg-white border border-slate-200 rounded-lg px-3 py-2 text-sm outline-none focus:border-primary font-medium"
+                        defaultValue=""
+                      >
+                        <option value="" disabled>Bulk Action...</option>
+                        <option value="active">Set Active</option>
+                        <option value="suspended">Suspend</option>
+                        <option value="banned">Ban</option>
+                      </select>
+                    </div>
+                  )}
+                  <div className="flex items-center gap-2">
+                    <Filter size={18} className="text-slate-400" />
+                    <select 
+                      value={roleFilter} 
+                      onChange={(e) => setRoleFilter(e.target.value)}
+                      className="bg-slate-50 border border-slate-200 rounded-lg px-3 py-2 text-sm outline-none focus:border-primary font-medium"
+                    >
+                      <option value="all">All Roles</option>
+                      <option value="user">User</option>
+                      <option value="admin">Admin</option>
+                      <option value="owner">Owner</option>
+                    </select>
+                    <select 
+                      value={statusFilter} 
+                      onChange={(e) => setStatusFilter(e.target.value)}
+                      className="bg-slate-50 border border-slate-200 rounded-lg px-3 py-2 text-sm outline-none focus:border-primary font-medium"
+                    >
+                      <option value="all">All Statuses</option>
+                      <option value="active">Active</option>
+                      <option value="suspended">Suspended</option>
+                      <option value="banned">Banned</option>
+                    </select>
+                  </div>
+                </div>
+              </div>
+              
+              {loading ? (
+                <div className="p-12 text-center text-slate-400">Loading...</div>
+              ) : (
+                <div className="overflow-x-auto">
+                  <table className="w-full text-left border-collapse">
+                    <thead>
+                      <tr className="bg-slate-50 text-slate-500 text-sm uppercase tracking-wider">
+                        <th className="p-4 font-medium w-12">
+                          <input 
+                            type="checkbox" 
+                            checked={filteredUsers.length > 0 && selectedUsers.length === filteredUsers.length}
+                            onChange={handleSelectAll}
+                            className="rounded border-slate-300 text-primary focus:ring-primary"
+                          />
+                        </th>
+                        <th className="p-4 font-medium">Name</th>
+                        <th className="p-4 font-medium">Email</th>
+                        <th className="p-4 font-medium">Type</th>
+                        <th className="p-4 font-medium">Role</th>
+                        <th className="p-4 font-medium">Online</th>
+                        <th className="p-4 font-medium">Status</th>
+                        <th className="p-4 font-medium">Verified</th>
+                        <th className="p-4 font-medium">Actions</th>
+                      </tr>
+                    </thead>
+                    <tbody className="text-sm">
+                      {filteredUsers.map(u => (
+                        <tr key={u.id} className="border-b border-slate-100 even:bg-slate-50/50 hover:bg-slate-50 transition-colors">
+                          <td className="p-4">
+                            <input 
+                              type="checkbox" 
+                              checked={selectedUsers.includes(u.id)}
+                              onChange={() => handleSelectUser(u.id)}
+                              className="rounded border-slate-300 text-primary focus:ring-primary"
+                            />
+                          </td>
+                          <td 
+                            className="p-4 font-bold text-slate-900 cursor-pointer hover:text-primary transition-colors"
+                            onClick={() => setSelectedUserForModal(u)}
+                          >
+                            {u.name}
+                          </td>
+                          <td className="p-4 text-slate-500">{u.email}</td>
+                          <td className="p-4">
+                            <span className={`px-2 py-1 rounded-md text-[10px] font-bold uppercase tracking-wider ${u.type === 'donor' ? 'bg-primary/10 text-primary' : 'bg-slate-100 text-slate-600'}`}>
+                              {u.type}
+                            </span>
+                          </td>
+                          <td className="p-4">
+                            <span className={`px-2 py-1 rounded-md text-[10px] font-bold uppercase tracking-wider ${u.role === 'owner' ? 'bg-purple-100 text-purple-600' : u.role === 'admin' ? 'bg-blue-100 text-blue-600' : 'bg-slate-100 text-slate-600'}`}>
+                              {u.role || 'user'}
+                            </span>
+                          </td>
+                          <td className="p-4">
+                            {u.is_online === 1 ? (
+                              <span className="text-green-500 font-medium flex items-center gap-1"><span className="w-2 h-2 bg-green-500 rounded-full"></span> Online</span>
+                            ) : (
+                              <span className="text-slate-400">Offline</span>
+                            )}
+                          </td>
+                          <td className="p-4">
+                            <span className={`px-2 py-1 rounded-md text-[10px] font-bold uppercase tracking-wider ${u.status === 'banned' ? 'bg-red-100 text-red-600' : u.status === 'suspended' ? 'bg-orange-100 text-orange-600' : 'bg-green-100 text-green-600'}`}>
+                              {u.status || 'active'}
+                            </span>
+                          </td>
+                          <td className="p-4">
+                            <button 
+                              onClick={() => fetch(`/api/admin/users/${u.id}/verify`, {
+                                method: 'PUT',
+                                headers: { 'Content-Type': 'application/json' },
+                                body: JSON.stringify({ is_verified: !u.is_verified })
+                              }).then(() => setUsers(users.map(user => user.id === u.id ? {...user, is_verified: user.is_verified ? 0 : 1} : user)))}
+                              className={`px-2 py-1 rounded-md text-[10px] font-bold uppercase tracking-wider ${u.is_verified ? 'bg-green-100 text-green-600' : 'bg-slate-100 text-slate-400'}`}
+                            >
+                              {u.is_verified ? 'Verified' : 'Verify'}
+                            </button>
+                          </td>
+                          <td className="p-4 flex gap-2">
+                            {user.role === 'owner' && u.email !== 'romij2882@gmail.com' && (
+                              <select 
+                                value={u.role || 'user'} 
+                                onChange={(e) => handleRoleChange(u.id, e.target.value)}
+                                className="bg-white border border-slate-200 rounded-lg px-3 py-1 text-xs outline-none focus:border-primary"
+                              >
+                                <option value="user">User</option>
+                                <option value="admin">Admin</option>
+                              </select>
+                            )}
+                            {u.email !== 'romij2882@gmail.com' && (
+                              <select 
+                                value={u.status || 'active'} 
+                                onChange={(e) => handleStatusChange(u.id, e.target.value)}
+                                className="bg-white border border-slate-200 rounded-lg px-3 py-1 text-xs outline-none focus:border-primary"
+                              >
+                                <option value="active">Active</option>
+                                <option value="suspended">Suspended</option>
+                                <option value="banned">Banned</option>
+                              </select>
+                            )}
+                          </td>
+                        </tr>
+                      ))}
+                      {filteredUsers.length === 0 && (
+                        <tr>
+                          <td colSpan={8} className="p-8 text-center text-slate-500">No users found matching the filters.</td>
+                        </tr>
+                      )}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </>
+          ) : (
+            <>
+              <div className="p-8 border-b border-slate-100 flex flex-wrap items-center justify-between gap-4">
+                <h3 className="text-xl font-bold text-slate-900">
+                  {lang === 'en' ? 'Blood Requests' : 'রক্তের অনুরোধসমূহ'}
+                </h3>
+                <div className="flex items-center gap-4">
+                  <input 
+                    type="text"
+                    placeholder="Search patient..."
+                    value={requestSearch}
+                    onChange={(e) => setRequestSearch(e.target.value)}
+                    className="bg-slate-50 border border-slate-200 rounded-lg px-3 py-2 text-sm outline-none focus:border-primary"
+                  />
+                  <select 
+                    value={requestStatusFilter} 
+                    onChange={(e) => setRequestStatusFilter(e.target.value)}
+                    className="bg-slate-50 border border-slate-200 rounded-lg px-3 py-2 text-sm outline-none focus:border-primary font-medium"
+                  >
+                    <option value="all">All Statuses</option>
+                    <option value="pending">Pending</option>
+                    <option value="success">Success</option>
+                    <option value="cancelled">Cancelled</option>
+                  </select>
+                </div>
+              </div>
+              {loading ? (
+                <div className="p-12 text-center text-slate-400">Loading...</div>
+              ) : (
+                <div className="overflow-x-auto">
+                  <table className="w-full text-left border-collapse">
+                    <thead>
+                      <tr className="bg-slate-50 text-slate-500 text-sm uppercase tracking-wider">
+                        <th className="p-4 font-medium">Patient</th>
+                        <th className="p-4 font-medium">Group</th>
+                        <th className="p-4 font-medium">Hospital</th>
+                        <th className="p-4 font-medium">District</th>
+                        <th className="p-4 font-medium">Status</th>
+                        <th className="p-4 font-medium">Posted</th>
+                      </tr>
+                    </thead>
+                    <tbody className="text-sm">
+                      {filteredRequests.map(r => (
+                        <tr key={r.id} className="border-b border-slate-100 even:bg-slate-50/50 hover:bg-slate-50 transition-colors">
+                          <td className="p-4 font-bold text-slate-900">{r.patient_name}</td>
+                          <td className="p-4 font-bold text-primary">{r.blood_group}</td>
+                          <td className="p-4 text-slate-600">{r.hospital}</td>
+                          <td className="p-4 text-slate-600">{r.district}</td>
+                          <td className="p-4">
+                            <span className={`px-2 py-1 rounded-md text-[10px] font-bold uppercase tracking-wider ${r.status === 'success' ? 'bg-green-100 text-green-600' : r.status === 'cancelled' ? 'bg-red-100 text-red-600' : 'bg-orange-100 text-orange-600'}`}>
+                              {r.status}
+                            </span>
+                          </td>
+                          <td className="p-4 text-slate-500">{new Date(r.created_at).toLocaleDateString()}</td>
+                        </tr>
+                      ))}
+                      {filteredRequests.length === 0 && (
+                        <tr>
+                          <td colSpan={6} className="p-8 text-center text-slate-500">No requests found matching the filters.</td>
+                        </tr>
+                      )}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </>
+          )}
+        </div>
+      </div>
+      
+      {/* ... Modal ... */}
     </div>
   );
 };
@@ -1425,13 +1977,39 @@ const RequestsPage = ({ onOpenChat, lang }: { onOpenChat: (id: number, name: str
 const Contact = ({ lang }: { lang: Language }) => {
   const [loading, setLoading] = useState(false);
   const [success, setSuccess] = useState(false);
+  const [location, setLocation] = useState<{lat: number, lng: number} | null>(null);
+  const [locating, setLocating] = useState(false);
   const t = translations[lang].requests;
+
+  const handleGetLocation = () => {
+    if (navigator.geolocation) {
+      setLocating(true);
+      navigator.geolocation.getCurrentPosition(
+        (pos) => {
+          setLocation({ lat: pos.coords.latitude, lng: pos.coords.longitude });
+          setLocating(false);
+        },
+        (err) => {
+          console.error(err);
+          setLocating(false);
+          alert("Could not get location. Please ensure location permissions are granted.");
+        }
+      );
+    } else {
+      alert("Geolocation is not supported by this browser.");
+    }
+  };
 
   const handleSubmit = async (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
     setLoading(true);
     const formData = new FormData(e.currentTarget);
-    const data = Object.fromEntries(formData.entries());
+    const data: any = Object.fromEntries(formData.entries());
+    
+    if (location) {
+      data.lat = location.lat;
+      data.lng = location.lng;
+    }
 
     try {
       const res = await fetch('/api/requests', {
@@ -1442,6 +2020,7 @@ const Contact = ({ lang }: { lang: Language }) => {
       if (res.ok) {
         setSuccess(true);
         e.currentTarget.reset();
+        setLocation(null);
       }
     } catch (e) {
       console.error(e);
@@ -1533,6 +2112,16 @@ const Contact = ({ lang }: { lang: Language }) => {
                     </div>
                     <input name="hospital" required type="text" placeholder={lang === 'en' ? "Hospital Name" : "হাসপাতালের নাম"} className="w-full px-6 py-4 bg-white/5 border border-white/10 rounded-2xl outline-none text-white placeholder:text-white/40" />
                     <input name="phone" required type="tel" placeholder={lang === 'en' ? "Contact Phone" : "যোগাযোগের ফোন"} className="w-full px-6 py-4 bg-white/5 border border-white/10 rounded-2xl outline-none text-white placeholder:text-white/40" />
+                    <button 
+                      type="button" 
+                      onClick={handleGetLocation}
+                      className={`w-full px-6 py-4 bg-white/5 border border-white/10 rounded-2xl outline-none text-white flex items-center justify-center gap-2 transition-colors ${location ? 'text-green-400 border-green-400/30' : 'hover:bg-white/10'}`}
+                    >
+                      <MapPin size={18} /> 
+                      {locating ? (lang === 'en' ? 'Getting location...' : 'অবস্থান নেওয়া হচ্ছে...') : 
+                       location ? (lang === 'en' ? 'Location Added ✓' : 'অবস্থান যোগ করা হয়েছে ✓') : 
+                       (lang === 'en' ? 'Add Location (Optional)' : 'অবস্থান যোগ করুন (ঐচ্ছিক)')}
+                    </button>
                     <button disabled={loading} className="w-full bg-primary text-white py-4 rounded-2xl font-bold hover:bg-secondary transition-all disabled:opacity-50">
                       {loading ? (lang === 'en' ? 'Submitting...' : 'জমা দেওয়া হচ্ছে...') : (lang === 'en' ? 'Submit Request' : 'অনুরোধ জমা দিন')}
                     </button>
@@ -1615,13 +2204,133 @@ const Footer = ({ lang }: { lang: Language }) => {
   );
 };
 
+const AIChatBot = ({ lang }: { lang: Language }) => {
+  const [isOpen, setIsOpen] = useState(false);
+  const [messages, setMessages] = useState<{role: 'user'|'model', text: string}[]>([
+    { role: 'model', text: lang === 'en' ? "Hello! I am Seba AI. How can I help you with blood donation today?" : "নমস্কার! আমি সেবা এআই। আজ আমি আপনাকে রক্তদান সম্পর্কে কীভাবে সাহায্য করতে পারি?" }
+  ]);
+  const [input, setInput] = useState('');
+  const [loading, setLoading] = useState(false);
+  const scrollRef = useRef<HTMLDivElement>(null);
+  const aiRef = useRef<any>(null);
+
+  useEffect(() => {
+    if (scrollRef.current) {
+      scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
+    }
+  }, [messages]);
+
+  const handleSend = async () => {
+    if (!input.trim() || loading) return;
+    
+    const userMsg = input.trim();
+    setMessages(prev => [...prev, { role: 'user', text: userMsg }]);
+    setInput('');
+    setLoading(true);
+
+    try {
+      if (!aiRef.current) {
+        const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
+        aiRef.current = ai.chats.create({
+          model: "gemini-3-flash-preview",
+          config: {
+            systemInstruction: "You are Seba AI, a helpful assistant for a blood donation platform in Bangladesh. You help users find donors, understand blood donation rules, and navigate the app. Keep your answers concise and helpful. You can speak in English or Bengali.",
+          }
+        });
+      }
+      
+      const response = await aiRef.current.sendMessage({ message: userMsg });
+      setMessages(prev => [...prev, { role: 'model', text: response.text || "Sorry, I couldn't understand that." }]);
+    } catch (e) {
+      console.error(e);
+      setMessages(prev => [...prev, { role: 'model', text: "Sorry, I am having trouble connecting right now." }]);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  return (
+    <>
+      <button 
+        onClick={() => setIsOpen(true)}
+        className={`fixed bottom-6 left-6 w-14 h-14 bg-primary text-white rounded-full shadow-2xl flex items-center justify-center hover:scale-110 transition-transform z-40 ${isOpen ? 'hidden' : ''}`}
+      >
+        <Bot size={24} />
+      </button>
+
+      <AnimatePresence>
+        {isOpen && (
+          <motion.div 
+            initial={{ opacity: 0, y: 20, scale: 0.9 }}
+            animate={{ opacity: 1, y: 0, scale: 1 }}
+            exit={{ opacity: 0, y: 20, scale: 0.9 }}
+            className="fixed bottom-6 left-6 w-[350px] h-[500px] bg-white rounded-3xl shadow-2xl z-50 flex flex-col overflow-hidden border border-slate-100"
+          >
+            <div className="bg-primary p-4 text-white flex justify-between items-center">
+              <div className="flex items-center gap-3">
+                <div className="w-10 h-10 bg-white/20 rounded-full flex items-center justify-center">
+                  <Bot size={20} />
+                </div>
+                <div>
+                  <div className="font-bold">Seba AI</div>
+                  <div className="text-xs text-white/70">Always here to help</div>
+                </div>
+              </div>
+              <button onClick={() => setIsOpen(false)} className="text-white/70 hover:text-white transition-colors">
+                <X size={20} />
+              </button>
+            </div>
+            
+            <div className="flex-1 overflow-y-auto p-4 space-y-4 bg-slate-50" ref={scrollRef}>
+              {messages.map((msg, i) => (
+                <div key={i} className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}>
+                  <div className={`max-w-[80%] p-3 rounded-2xl text-sm ${msg.role === 'user' ? 'bg-primary text-white rounded-br-sm' : 'bg-white text-slate-700 shadow-sm border border-slate-100 rounded-bl-sm'}`}>
+                    {msg.text}
+                  </div>
+                </div>
+              ))}
+              {loading && (
+                <div className="flex justify-start">
+                  <div className="bg-white text-slate-400 p-3 rounded-2xl rounded-bl-sm shadow-sm border border-slate-100 text-sm flex gap-1">
+                    <span className="animate-bounce">.</span><span className="animate-bounce" style={{animationDelay: '0.2s'}}>.</span><span className="animate-bounce" style={{animationDelay: '0.4s'}}>.</span>
+                  </div>
+                </div>
+              )}
+            </div>
+            
+            <div className="p-4 bg-white border-t border-slate-100">
+              <div className="flex gap-2">
+                <input 
+                  type="text" 
+                  value={input}
+                  onChange={e => setInput(e.target.value)}
+                  onKeyDown={e => e.key === 'Enter' && handleSend()}
+                  placeholder={lang === 'en' ? "Ask Seba AI..." : "সেবা এআই কে জিজ্ঞাসা করুন..."}
+                  className="flex-1 bg-slate-100 rounded-xl px-4 py-3 text-sm outline-none focus:ring-2 focus:ring-primary/20"
+                />
+                <button 
+                  onClick={handleSend}
+                  disabled={loading || !input.trim()}
+                  className="bg-primary text-white w-12 h-12 rounded-xl flex items-center justify-center hover:bg-secondary transition-colors disabled:opacity-50"
+                >
+                  <Send size={18} />
+                </button>
+              </div>
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+    </>
+  );
+};
+
 export default function App() {
   const [user, setUser] = useState<UserData | null>(null);
   const [authModal, setAuthModal] = useState({ isOpen: false, mode: 'login' as 'login' | 'register' });
   const [loading, setLoading] = useState(true);
   const [notifications, setNotifications] = useState<Notification[]>([]);
   const [unreadCount, setUnreadCount] = useState(0);
-  const [chatState, setChatState] = useState<{ isOpen: boolean, otherId: number, otherName: string }>({ isOpen: false, otherId: 0, otherName: '' });
+  const [chatState, setChatState] = useState<{ isOpen: boolean, otherId: number, otherName: string, isOnline?: number, lastSeen?: string }>({ isOpen: false, otherId: 0, otherName: '' });
   const [messages, setMessages] = useState<Message[]>([]);
   const [lang, setLang] = useState<Language>('en');
   const [view, setView] = useState('home');
@@ -1645,6 +2354,11 @@ export default function App() {
     checkAuth();
   }, []);
 
+  const chatStateRef = useRef(chatState);
+  useEffect(() => {
+    chatStateRef.current = chatState;
+  }, [chatState]);
+
   useEffect(() => {
     if (user) {
       // Setup WebSocket
@@ -1654,11 +2368,13 @@ export default function App() {
 
       socket.onmessage = (event) => {
         const data = JSON.parse(event.data);
+        const currentChatState = chatStateRef.current;
+        
         if (data.type === 'notification') {
           setNotifications(prev => [data.notification, ...prev]);
           setUnreadCount(prev => prev + 1);
         } else if (data.type === 'chat') {
-          if (chatState.isOpen && data.message.sender_id === chatState.otherId) {
+          if (currentChatState.isOpen && data.message.sender_id === currentChatState.otherId) {
             setMessages(prev => [...prev, data.message]);
           } else {
             // Show notification for new message
@@ -1674,6 +2390,10 @@ export default function App() {
           }
         } else if (data.type === 'chat_sent') {
           setMessages(prev => [...prev, data.message]);
+        } else if (data.type === 'status_change') {
+          if (currentChatState.isOpen && currentChatState.otherId === data.userId) {
+            setChatState(prev => ({ ...prev, isOnline: data.isOnline, lastSeen: data.lastSeen }));
+          }
         }
       };
 
@@ -1690,7 +2410,7 @@ export default function App() {
 
       return () => socket.close();
     }
-  }, [user, chatState.isOpen, chatState.otherId]);
+  }, [user?.id]);
 
   const fetchNotifications = async () => {
     try {
@@ -1714,12 +2434,12 @@ export default function App() {
     }
   };
 
-  const openChat = async (otherId: number, otherName: string) => {
+  const openChat = async (otherId: number, otherName: string, isOnline?: number, lastSeen?: string) => {
     try {
       const res = await fetch(`/api/messages/${otherId}`);
       const data = await res.json();
       setMessages(data.messages);
-      setChatState({ isOpen: true, otherId, otherName });
+      setChatState({ isOpen: true, otherId, otherName, isOnline, lastSeen });
     } catch (e) {
       console.error(e);
     }
@@ -1788,6 +2508,24 @@ export default function App() {
           >
             <RequestsPage onOpenChat={openChat} lang={lang} />
           </motion.div>
+        ) : view === 'campaigns' ? (
+          <motion.div
+            key="campaigns"
+            initial={{ opacity: 0, x: 20 }}
+            animate={{ opacity: 1, x: 0 }}
+            exit={{ opacity: 0, x: -20 }}
+          >
+            <CampaignsPage user={user} lang={lang} />
+          </motion.div>
+        ) : view === 'admin' && (user?.role === 'admin' || user?.role === 'owner') ? (
+          <motion.div
+            key="admin"
+            initial={{ opacity: 0, x: 20 }}
+            animate={{ opacity: 1, x: 0 }}
+            exit={{ opacity: 0, x: -20 }}
+          >
+            <AdminPanel user={user} lang={lang} />
+          </motion.div>
         ) : (
           <motion.div
             key="home"
@@ -1820,6 +2558,8 @@ export default function App() {
             user={user}
             otherId={chatState.otherId}
             otherName={chatState.otherName}
+            isOnline={chatState.isOnline}
+            lastSeen={chatState.lastSeen}
             messages={messages}
             onClose={() => setChatState({ ...chatState, isOpen: false })}
             onSendMessage={sendMessage}
@@ -1828,6 +2568,7 @@ export default function App() {
       </AnimatePresence>
       
       <Footer lang={lang} />
+      <AIChatBot lang={lang} />
     </div>
   );
 }
