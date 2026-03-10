@@ -754,7 +754,12 @@ const ProfileSection = ({ user, onUpdate }: { user: UserData, onUpdate: (u: User
             {!editing ? (
               <div className="grid md:grid-cols-2 gap-12">
                 <div>
-                  <h2 className="text-3xl font-bold serif text-slate-900 mb-2">{user.name}</h2>
+                  <h2 className="text-3xl font-bold serif text-slate-900 mb-2 flex items-center gap-2">
+                    {user.name}
+                    {user.is_verified === 1 && (
+                      <span className="bg-green-100 text-green-700 text-xs px-2 py-0.5 rounded-full font-bold uppercase">Verified</span>
+                    )}
+                  </h2>
                   <p className="text-primary font-bold uppercase tracking-widest text-xs mb-6">{user.type} Account</p>
                   
                   <div className="space-y-4">
@@ -1102,7 +1107,7 @@ const SearchSection = ({ onOpenChat, lang }: { onOpenChat: (id: number, name: st
                         <div className="font-bold text-slate-900 flex items-center gap-2">
                           {donor.name}
                           {donor.is_verified === 1 && (
-                            <span className="bg-blue-100 text-blue-600 px-1.5 py-0.5 rounded-full text-[9px] font-bold">Verified</span>
+                            <span className="bg-green-100 text-green-700 text-[9px] px-1.5 py-0.5 rounded-full font-bold uppercase">Verified</span>
                           )}
                           {donor.is_online === 1 ? (
                             <span className="w-2 h-2 bg-green-500 rounded-full" title="Online"></span>
@@ -1348,6 +1353,9 @@ const BloodRequestsFeed = ({ onOpenChat, lang }: { onOpenChat: (id: number, name
                 <div>
                   <h4 className="font-bold text-slate-900 flex items-center gap-2">
                     {req.patient_name}
+                    {req.is_verified === 1 && (
+                      <span className="bg-green-100 text-green-700 text-[10px] px-1.5 py-0.5 rounded-full font-bold uppercase">Verified</span>
+                    )}
                     {req.is_online === 1 ? (
                       <span className="w-2 h-2 bg-green-500 rounded-full" title="Online"></span>
                     ) : req.last_seen ? (
@@ -1602,12 +1610,15 @@ const AdminPanel = ({ user, lang }: { user: UserData, lang: Language }) => {
   const [requestSearch, setRequestSearch] = useState<string>('');
   const [selectedUserForModal, setSelectedUserForModal] = useState<UserData | null>(null);
 
+  const [stats, setStats] = useState({ donors: 0, requests: 0, pending: 0, success: 0 });
+
   useEffect(() => {
     const fetchData = async () => {
       try {
-        const [usersRes, requestsRes] = await Promise.all([
+        const [usersRes, requestsRes, statsRes] = await Promise.all([
           fetch('/api/admin/users'),
-          fetch('/api/requests')
+          fetch('/api/requests'),
+          fetch('/api/stats')
         ]);
         if (usersRes.ok) {
           const userData = await usersRes.json();
@@ -1616,6 +1627,10 @@ const AdminPanel = ({ user, lang }: { user: UserData, lang: Language }) => {
         if (requestsRes.ok) {
           const reqData = await requestsRes.json();
           setRequests(reqData.requests);
+        }
+        if (statsRes.ok) {
+          const statsData = await statsRes.json();
+          setStats(statsData);
         }
       } catch (e) {
         console.error(e);
@@ -1627,7 +1642,7 @@ const AdminPanel = ({ user, lang }: { user: UserData, lang: Language }) => {
   }, []);
 
   const handleRoleChange = async (userId: number, newRole: string) => {
-    if (user.role !== 'owner') return; // Only owner can change roles
+    if (user.role !== 'owner' && user.role !== 'admin') return;
     
     try {
       const res = await fetch(`/api/admin/users/${userId}/role`, {
@@ -1713,9 +1728,28 @@ const AdminPanel = ({ user, lang }: { user: UserData, lang: Language }) => {
           <h2 className="text-4xl font-bold serif text-slate-900 mb-4">
             {lang === 'en' ? 'Admin Panel' : 'অ্যাডমিন প্যানেল'}
           </h2>
-          <p className="text-slate-500">
+          <p className="text-slate-500 mb-8">
             {lang === 'en' ? 'Manage users and platform settings.' : 'ব্যবহারকারী এবং প্ল্যাটফর্ম সেটিংস পরিচালনা করুন।'}
           </p>
+          
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-6">
+            <div className="p-6 rounded-2xl bg-white shadow-sm border border-slate-100">
+              <div className="text-sm text-slate-500 font-bold uppercase tracking-widest mb-1">Total Donors</div>
+              <div className="text-3xl font-bold text-slate-900">{stats.donors}</div>
+            </div>
+            <div className="p-6 rounded-2xl bg-white shadow-sm border border-slate-100">
+              <div className="text-sm text-slate-500 font-bold uppercase tracking-widest mb-1">Requests</div>
+              <div className="text-3xl font-bold text-slate-900">{stats.requests}</div>
+            </div>
+            <div className="p-6 rounded-2xl bg-white shadow-sm border border-slate-100">
+              <div className="text-sm text-slate-500 font-bold uppercase tracking-widest mb-1">Pending</div>
+              <div className="text-3xl font-bold text-orange-600">{stats.pending}</div>
+            </div>
+            <div className="p-6 rounded-2xl bg-white shadow-sm border border-slate-100">
+              <div className="text-sm text-slate-500 font-bold uppercase tracking-widest mb-1">Success</div>
+              <div className="text-3xl font-bold text-green-600">{stats.success}</div>
+            </div>
+          </div>
         </div>
 
         <div className="flex gap-4 mb-8">
@@ -1824,10 +1858,13 @@ const AdminPanel = ({ user, lang }: { user: UserData, lang: Language }) => {
                             />
                           </td>
                           <td 
-                            className="p-4 font-bold text-slate-900 cursor-pointer hover:text-primary transition-colors"
+                            className="p-4 font-bold text-slate-900 cursor-pointer hover:text-primary transition-colors flex items-center gap-2"
                             onClick={() => setSelectedUserForModal(u)}
                           >
                             {u.name}
+                            {u.is_verified ? (
+                              <span className="bg-green-100 text-green-700 text-[10px] px-1.5 py-0.5 rounded-full font-bold uppercase">Verified</span>
+                            ) : null}
                           </td>
                           <td className="p-4 text-slate-500">{u.email}</td>
                           <td className="p-4">
@@ -1865,14 +1902,15 @@ const AdminPanel = ({ user, lang }: { user: UserData, lang: Language }) => {
                             </button>
                           </td>
                           <td className="p-4 flex gap-2">
-                            {user.role === 'owner' && u.email !== 'romij2882@gmail.com' && (
+                            {(user.role === 'owner' || user.role === 'admin') && u.email !== 'romij2882@gmail.com' && (
                               <select 
                                 value={u.role || 'user'} 
                                 onChange={(e) => handleRoleChange(u.id, e.target.value)}
                                 className="bg-white border border-slate-200 rounded-lg px-3 py-1 text-xs outline-none focus:border-primary"
                               >
                                 <option value="user">User</option>
-                                <option value="admin">Admin</option>
+                                <option value="moderator">Moderator</option>
+                                {user.role === 'owner' && <option value="admin">Admin</option>}
                               </select>
                             )}
                             {u.email !== 'romij2882@gmail.com' && (
@@ -2354,6 +2392,12 @@ export default function App() {
     checkAuth();
   }, []);
 
+  useEffect(() => {
+    if ('Notification' in window) {
+      Notification.requestPermission();
+    }
+  }, []);
+
   const chatStateRef = useRef(chatState);
   useEffect(() => {
     chatStateRef.current = chatState;
@@ -2373,20 +2417,27 @@ export default function App() {
         if (data.type === 'notification') {
           setNotifications(prev => [data.notification, ...prev]);
           setUnreadCount(prev => prev + 1);
+          if ('Notification' in window && Notification.permission === 'granted') {
+            new Notification(data.notification.title, { body: data.notification.message });
+          }
         } else if (data.type === 'chat') {
           if (currentChatState.isOpen && data.message.sender_id === currentChatState.otherId) {
             setMessages(prev => [...prev, data.message]);
           } else {
             // Show notification for new message
-            setNotifications(prev => [{
+            const notification = {
               id: Date.now(),
               title: 'New Message',
               message: `You received a new message from a donor.`,
               type: 'message',
               is_read: 0,
               created_at: new Date().toISOString()
-            }, ...prev]);
+            };
+            setNotifications(prev => [notification, ...prev]);
             setUnreadCount(prev => prev + 1);
+            if ('Notification' in window && Notification.permission === 'granted') {
+              new Notification(notification.title, { body: notification.message });
+            }
           }
         } else if (data.type === 'chat_sent') {
           setMessages(prev => [...prev, data.message]);

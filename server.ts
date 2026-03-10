@@ -384,7 +384,7 @@ async function startServer() {
 
   app.get("/api/requests", (req, res) => {
     const requests = db.prepare(`
-      SELECT r.*, u.is_online, u.last_seen, u.name as requester_name 
+      SELECT r.*, u.is_online, u.last_seen, u.name as requester_name, u.is_verified
       FROM blood_requests r
       LEFT JOIN users u ON r.user_id = u.id
       ORDER BY r.created_at DESC
@@ -483,12 +483,16 @@ async function startServer() {
 
   app.put("/api/admin/users/:id/role", (req, res) => {
     const user: any = getSessionUser(req);
-    if (!user || user.role !== 'owner') {
+    if (!user || (user.role !== 'owner' && user.role !== 'admin')) {
       return res.status(403).json({ error: "Forbidden" });
     }
     
     const { role } = req.body;
     const { id } = req.params;
+
+    if (user.role === 'admin' && (role === 'admin' || role === 'owner')) {
+      return res.status(403).json({ error: "Forbidden" });
+    }
 
     try {
       db.prepare("UPDATE users SET role = ? WHERE id = ?").run(role, id);
